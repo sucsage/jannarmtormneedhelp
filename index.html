@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Realtime Map + Zones + Help Request</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet Draw -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+  <!-- Socket.IO -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: sans-serif;
+    }
+
+    #map {
+      height: 70vh;
+    }
+
+    #panel {
+      padding: 10px;
+      background: #eee;
+      border-top: 1px solid #ccc;
+    }
+
+    #log {
+      height: 18vh;
+      overflow-y: auto;
+      padding: 7px;
+      background: white;
+      border: 1px solid #ccc;
+    }
+
+    button {
+      padding: 10px 20px;
+      margin-top: 10px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="map"></div>
+
+  <div id="panel">
+    <button id="helpBtn">🚨 ขอความช่วยเหลือ</button>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    const ROOM = "global";
+    let map, me;
+    let lastLat = 0, lastLng = 0;
+
+    const others = new Map();
+    const zoneLayers = new Map();
+
+    // ==========================
+    // CONNECT SOCKET
+    // ==========================
+    const socket = io("http://165.101.65.146:4000/", {
+      transports: ["websocket"]
+    });
+
+    // ==========================
+    // JOIN room *ก่อน* GPS
+    // ป้องกัน "คนแรกไม่เห็นคนหลัง"
+    // ==========================
+    socket.emit("join", { room: ROOM, lat: 0, lng: 0 });
+
+    function log(t) {
+      let d = document.getElementById("log");
+      d.innerHTML += t + "<br>";
+      d.scrollTop = d.scrollHeight;
+    }
+
+    // ==========================
+    // GET GPS
+    // ==========================
+    navigator.geolocation.getCurrentPosition(pos => {
+      lastLat = pos.coords.latitude;
+      lastLng = pos.coords.longitude;
+
+      // map init
+      map = L.map("map").setView([lastLat, lastLng], 16);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+
+      // my marker
+      me = L.marker([lastLat, lastLng], {
+        icon: L.icon({
+          iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+          iconSize: [32, 32],
+          iconAnchor: [16, 32]
+        })
+      }).addTo(map).bindPopup("คุณ");
+
+      // update server
+      socket.emit("move", { lat: lastLat, lng: lastLng });
+
+      setupDrawTools();
+
+    }, err => alert("GPS Error: " + err.message));
+
+
+
+    // ==========================
+    // DRAW CONTROLS
+    // ==========================
+    function setupDrawTools() {
+      const editable = L.featureGroup().addTo(map);
+
+      const drawControl = new L.Control.Draw({
+        draw: {
+          circle: true,
+          polygon: true,
+          rectangle: true,
+          marker: false,
+          polyline: false
+        },
+        edit: { featureGroup: editable }
+      });
+
+      map.addControl(drawControl);
+
+      map.on(L.Draw.Event.CREATED, e => {
+        const layer = e.layer;
+        editable.addLayer(layer);
+
+        const type = e.layerType;
+        const caption = prompt("ใส่ caption:") || "";
+        const data = { type, caption };
+
+        if (type === "circle") {
+          const c = layer.getLatLng();
+          data.lat = c.lat;
+          data.lng = c.lng;
+          data.radius = layer.getRadius();
+        }
+
+        if (type === "polygon" || type === "rectangle") {
+          data.points = layer.getLatLngs()[0].map(p => ({ lat: p.lat, lng: p.lng }));
+        }
+
+        socket.emit("zone:create", data);
+      });
+    }
+
+
+
+    // ==========================
+    // SOCKET — POSITIONS
+    // ==========================
+    socket.on("positions", list => {
+      list.forEach(u => {
+        if (u.socket_id === socket.id) {
+          // self
+          if (!me) {
+            me = L.marker([u.lat, u.lng], {
+              icon: L.icon({
+                iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+                iconSize: [32, 32],
+                iconAnchor: [16, 32]
+              })
+            }).addTo(map).bindPopup("คุณ");
+          } else {
+            me.setLatLng([u.lat, u.lng]);
+          }
+        } else {
+          // others
+          const mk = L.marker([u.lat, u.lng], {
+            icon: L.icon({
+              iconUrl: "https://cdn-icons-png.flaticon.com/512/2776/2776067.png",
+              iconSize: [32, 32],
+              iconAnchor: [16, 32]
+            })
+          }).addTo(map);
+          others.set(u.socket_id, mk);
+        }
+      });
+    });
+
+
+
+    // ==========================
+    // SOCKET — MOVE
+    // ==========================
+    socket.on("move", ({ id, lat, lng }) => {
+      if (!others.has(id)) {
+        others.set(
+          id,
+          L.marker([lat, lng], {
+            icon: L.icon({
+              iconUrl: "https://cdn-icons-png.flaticon.com/512/2776/2776063.png",
+              iconSize: [32, 32], iconAnchor: [16, 32]
+            })
+          }).addTo(map)
+        );
+      } else {
+        others.get(id).setLatLng([lat, lng]);
+      }
+    });
+
+
+
+    // ==========================
+    // SOCKET — USER JOIN / LEAVE
+    // ==========================
+    socket.on("user-join", id => log("🟢 ผู้ใช้เข้า: " + id));
+    socket.on("left", id => {
+      log("🔴 ผู้ใช้ออก: " + id);
+      if (others.has(id)) {
+        map.removeLayer(others.get(id));
+        others.delete(id);
+      }
+    });
+
+
+
+    // ==========================
+    // SOCKET — ZONES
+    // ==========================
+    socket.on("zones", zs => zs.forEach(drawZone));
+    socket.on("zone:created", z => drawZone(z));
+    socket.on("zone:deleted", ({ id }) => {
+      if (zoneLayers.has(id)) {
+        map.removeLayer(zoneLayers.get(id));
+        zoneLayers.delete(id);
+      }
+    });
+
+    function drawZone(z) {
+      let layer;
+
+      if (z.type === "circle") {
+        layer = L.circle([z.lat, z.lng], {
+          radius: z.radius,
+          color: "red",
+          fillColor: "#ff7777",
+          fillOpacity: 0.3
+        }).addTo(map).bindPopup(z.caption);
+      }
+
+      if (z.type === "polygon") {
+        layer = L.polygon(z.points, {
+          color: "blue", fillOpacity: 0.3
+        }).addTo(map).bindPopup(z.caption);
+      }
+
+      if (z.type === "rectangle") {
+        layer = L.rectangle(z.points, {
+          color: "green", fillOpacity: 0.3
+        }).addTo(map).bindPopup(z.caption);
+      }
+
+      zoneLayers.set(z.id, layer);
+    }
+
+
+
+    // ==========================
+    // HELP REQUEST (CLIENT → SERVER)
+    // ==========================
+    document.getElementById("helpBtn").onclick = () => {
+      if (!lastLat || !lastLng) {
+        return alert("ยังไม่ได้ตำแหน่ง GPS");
+      }
+
+      const type = prompt("ต้องการความช่วยเหลือเรื่องอะไร?\n\nเช่น:\nอุบัติเหตุ\nถูกทำร้าย\nไฟไหม้\nตกเลือด\nอื่น ๆ");
+      if (!type) return;
+
+      const note = prompt("รายละเอียดเพิ่มเติม (ไม่บังคับ)") || "";
+
+      socket.emit("help:request", {
+        lat: lastLat,
+        lng: lastLng,
+        type,
+        note
+      });
+
+      alert("📡 ส่งคำขอความช่วยเหลือแล้ว!");
+    };
+
+
+
+    // ==========================
+    // HELP REQUEST — DRAW MARKER
+    // ==========================
+    function drawHelpMarker(data) {
+      L.marker([data.lat, data.lng], {
+        icon: L.icon({
+          iconUrl: "https://cdn-icons-png.flaticon.com/512/463/463612.png",
+          iconSize: [38, 38], iconAnchor: [19, 38]
+        })
+      })
+        .addTo(map)
+        .bindPopup(`
+    🚨 <b>ขอความช่วยเหลือ</b><br>
+    ประเภท: ${data.type}<br>
+    รายละเอียด: ${data.note || "-"}<br>
+    เวลา: ${new Date(data.created_at).toLocaleString("th-TH")}
+  `);
+    }
+
+
+
+    // ==========================
+    // HELP REQUEST — LOAD OLD LIST
+    // ==========================
+    socket.on("help:list", (list) => {
+      list.forEach(drawHelpMarker);
+    });
+
+    // ==========================
+    // HELP REQUEST — REALTIME
+    // ==========================
+    socket.on("help:incoming", data => {
+      drawHelpMarker(data);
+      log(`🚨 ช่วยเหลือ: ${data.type}`);
+    });
+  </script>
+</body>
+
+</html>
