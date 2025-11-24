@@ -70,9 +70,7 @@
     // ==========================
     // CONNECT SOCKET
     // ==========================
-    const socket = io("http://jannarmtormneedhelp.duckdns.org:4000/", {
-      transports: ["websocket"]
-    });
+    const socket = io("wss://jannarmtormneedhelp.duckdns.org");
 
     // ==========================
     // JOIN room *ก่อน* GPS
