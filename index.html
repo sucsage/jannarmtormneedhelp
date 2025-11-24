@@ -78,7 +78,42 @@
     // JOIN room *ก่อน* GPS
     // ป้องกัน "คนแรกไม่เห็นคนหลัง"
     // ==========================
-    socket.emit("join", { room: ROOM, lat: 0, lng: 0 });
+    navigator.geolocation.getCurrentPosition(pos => {
+
+      lastLat = pos.coords.latitude;
+      lastLng = pos.coords.longitude;
+
+      // 1) JOIN ROOM พร้อมตำแหน่งจริง
+      socket.emit("join", {
+        room: ROOM,
+        lat: lastLat,
+        lng: lastLng
+      });
+
+      // 2) สร้างแผนที่
+      map = L.map("map").setView([lastLat, lastLng], 16);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png")
+        .addTo(map);
+
+      // 3) marker ตัวเอง
+      me = L.marker([lastLat, lastLng], {
+        icon: L.icon({
+          iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+          iconSize: [32, 32],
+          iconAnchor: [16, 32]
+        })
+      }).addTo(map);
+
+      // 4) แจ้งตำแหน่งไป server
+      socket.emit("move", {
+        lat: lastLat,
+        lng: lastLng
+      });
+
+      setupDrawTools();
+
+    }, err => alert("GPS Error: " + err.message));
 
     function log(t) {
       let d = document.getElementById("log");
